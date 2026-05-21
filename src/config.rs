@@ -1,45 +1,57 @@
 use serde::Deserialize;
-use std::fs;
 use std::path::Path;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum ConfigError {
-    #[error("Failed to read config file: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Failed to parse config: {0}")]
-    Parse(#[from] toml::de::Error),
-}
-
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub poll_interval_secs: u64,
-    pub webhook_url: String,
-    pub processes: Vec<ProcessConfig>,
+    pub webhook: WebhookConfig,
+    pub alerts: AlertConfig,
+    pub processes: Vec<ProcessFilter>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ProcessConfig {
-    pub name: String,
-    pub cpu_threshold_pct: f32,
-    pub mem_threshold_mb: u64,
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookConfig {
+    pub url: String,
+    pub timeout_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlertConfig {
+    pub cpu_threshold_percent: f64,
+    pub memory_threshold_mb: f64,
+    pub repeat_interval_cycles: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProcessFilter {
+    pub name: Option<String>,
+    pub pid: Option<u32>,
 }
 
 impl Config {
-    pub fn from_file(path: &Path) -> Result<Self, ConfigError> {
-        let contents = fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&contents)?;
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config file {:?}: {}", path, e))?;
+        let config: Config = toml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+        config.validate()?;
         Ok(config)
     }
-}
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            poll_interval_secs: 30,
-            webhook_url: String::from("https://hooks.example.com/alert"),
-            processes: vec![],
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.webhook.url.is_empty() {
+            anyhow::bail!("webhook.url must not be empty");
         }
+        if self.poll_interval_secs == 0 {
+            anyhow::bail!("poll_interval_secs must be greater than 0");
+        }
+        if self.alerts.cpu_threshold_percent <= 0.0 || self.alerts.cpu_threshold_percent > 100.0 {
+            anyhow::bail!("cpu_threshold_percent must be between 0 and 100");
+        }
+        if self.alerts.memory_threshold_mb <= 0.0 {
+            anyhow::bail!("memory_threshold_mb must be greater than 0");
+        }
+        Ok(())
     }
 }
 
@@ -49,34 +61,41 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_parse_valid_config() {
-        let toml_content = r#"
-poll_interval_secs = 15
-webhook_url = "https://hooks.example.com/test"
-
-[[processes]]
-name = "nginx"
-cpu_threshold_pct = 80.0
-mem_threshold_mb = 512
-
-[[processes]]
-name = "postgres"
-cpu_threshold_pct = 90.0
-mem_threshold_mb = 2048
-"#;
-        let mut tmpfile = NamedTempFile::new().unwrap();
-        tmpfile.write_all(toml_content.as_bytes()).unwrap();
-        let config = Config::from_file(tmpfile.path()).unwrap();
-        assert_eq!(config.poll_interval_secs, 15);
-        assert_eq!(config.processes.len(), 2);
-        assert_eq!(config.processes[0].name, "nginx");
-        assert_eq!(config.processes[1].mem_threshold_mb, 2048);
+    fn write_config(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "{}", content).unwrap();
+        f
     }
 
     #[test]
-    fn test_missing_file_returns_error() {
-        let result = Config::from_file(Path::new("/nonexistent/path/config.toml"));
-        assert!(result.is_err());
+    fn valid_config_parses() {
+        let toml = r#"
+            poll_interval_secs = 5
+            [webhook]
+            url = "http://example.com/hook"
+            [alerts]
+            cpu_threshold_percent = 80.0
+            memory_threshold_mb = 512.0
+            [[processes]]
+            name = "nginx"
+        "#;
+        let f = write_config(toml);
+        let cfg = Config::from_file(f.path()).unwrap();
+        assert_eq!(cfg.poll_interval_secs, 5);
+        assert_eq!(cfg.alerts.cpu_threshold_percent, 80.0);
+    }
+
+    #[test]
+    fn invalid_cpu_threshold_rejected() {
+        let toml = r#"
+            poll_interval_secs = 5
+            [webhook]
+            url = "http://example.com/hook"
+            [alerts]
+            cpu_threshold_percent = 150.0
+            memory_threshold_mb = 512.0
+        "#;
+        let f = write_config(toml);
+        assert!(Config::from_file(f.path()).is_err());
     }
 }
