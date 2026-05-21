@@ -1,55 +1,65 @@
 use serde::Deserialize;
+use std::fs;
 use std::path::Path;
+use crate::process_filter::ProcessFilter;
 
-#[derive(Debug, Clone, Deserialize)]
+/// Top-level daemon configuration loaded from a TOML file.
+#[derive(Debug, Deserialize)]
 pub struct Config {
+    /// How often to poll process metrics, in seconds.
+    #[serde(default = "default_interval")]
     pub poll_interval_secs: u64,
-    pub webhook: WebhookConfig,
-    pub alerts: AlertConfig,
-    pub processes: Vec<ProcessFilter>,
+
+    /// Webhook URL to POST alerts to.
+    pub webhook_url: String,
+
+    /// Optional bearer token for webhook authentication.
+    pub webhook_token: Option<String>,
+
+    /// CPU usage threshold (%) above which an alert is triggered.
+    #[serde(default = "default_cpu_threshold")]
+    pub cpu_alert_threshold: f64,
+
+    /// Memory usage threshold (MB) above which an alert is triggered.
+    #[serde(default = "default_mem_threshold")]
+    pub mem_alert_mb_threshold: f64,
+
+    /// Minimum seconds between repeated alerts for the same process.
+    #[serde(default = "default_throttle_secs")]
+    pub alert_throttle_secs: u64,
+
+    /// Optional filter controlling which processes are monitored.
+    #[serde(default)]
+    pub filter: ProcessFilter,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct WebhookConfig {
-    pub url: String,
-    pub timeout_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct AlertConfig {
-    pub cpu_threshold_percent: f64,
-    pub memory_threshold_mb: f64,
-    pub repeat_interval_cycles: Option<u32>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProcessFilter {
-    pub name: Option<String>,
-    pub pid: Option<u32>,
-}
+fn default_interval() -> u64 { 10 }
+fn default_cpu_threshold() -> f64 { 80.0 }
+fn default_mem_threshold() -> f64 { 512.0 }
+fn default_throttle_secs() -> u64 { 300 }
 
 impl Config {
-    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read config file {:?}: {}", path, e))?;
-        let config: Config = toml::from_str(&content)
-            .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?;
+    /// Load and parse a TOML configuration file from `path`.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let contents = fs::read_to_string(path)?;
+        let config: Config = toml::from_str(&contents)?;
         config.validate()?;
         Ok(config)
     }
 
+    /// Validate configuration values, returning an error for invalid settings.
     fn validate(&self) -> anyhow::Result<()> {
-        if self.webhook.url.is_empty() {
-            anyhow::bail!("webhook.url must not be empty");
+        if self.webhook_url.is_empty() {
+            anyhow::bail!("webhook_url must not be empty");
         }
         if self.poll_interval_secs == 0 {
             anyhow::bail!("poll_interval_secs must be greater than 0");
         }
-        if self.alerts.cpu_threshold_percent <= 0.0 || self.alerts.cpu_threshold_percent > 100.0 {
-            anyhow::bail!("cpu_threshold_percent must be between 0 and 100");
+        if !(0.0..=100.0).contains(&self.cpu_alert_threshold) {
+            anyhow::bail!("cpu_alert_threshold must be between 0 and 100");
         }
-        if self.alerts.memory_threshold_mb <= 0.0 {
-            anyhow::bail!("memory_threshold_mb must be greater than 0");
+        if self.mem_alert_mb_threshold <= 0.0 {
+            anyhow::bail!("mem_alert_mb_threshold must be positive");
         }
         Ok(())
     }
@@ -68,34 +78,32 @@ mod tests {
     }
 
     #[test]
-    fn valid_config_parses() {
-        let toml = r#"
-            poll_interval_secs = 5
-            [webhook]
-            url = "http://example.com/hook"
-            [alerts]
-            cpu_threshold_percent = 80.0
-            memory_threshold_mb = 512.0
-            [[processes]]
-            name = "nginx"
-        "#;
-        let f = write_config(toml);
+    fn parses_minimal_config() {
+        let f = write_config(r#"webhook_url = "https://hooks.example.com/abc""#);
         let cfg = Config::from_file(f.path()).unwrap();
-        assert_eq!(cfg.poll_interval_secs, 5);
-        assert_eq!(cfg.alerts.cpu_threshold_percent, 80.0);
+        assert_eq!(cfg.poll_interval_secs, 10);
+        assert_eq!(cfg.cpu_alert_threshold, 80.0);
+        assert!(cfg.filter.is_empty());
     }
 
     #[test]
-    fn invalid_cpu_threshold_rejected() {
-        let toml = r#"
-            poll_interval_secs = 5
-            [webhook]
-            url = "http://example.com/hook"
-            [alerts]
-            cpu_threshold_percent = 150.0
-            memory_threshold_mb = 512.0
-        "#;
-        let f = write_config(toml);
+    fn parses_filter_section() {
+        let f = write_config(
+            r#"
+            webhook_url = "https://hooks.example.com/abc"
+            [filter]
+            name_contains = "nginx"
+            min_cpu_percent = 5.0
+            "#,
+        );
+        let cfg = Config::from_file(f.path()).unwrap();
+        assert_eq!(cfg.filter.name_contains.as_deref(), Some("nginx"));
+        assert_eq!(cfg.filter.min_cpu_percent, Some(5.0));
+    }
+
+    #[test]
+    fn rejects_empty_webhook_url() {
+        let f = write_config(r#"webhook_url = """");
         assert!(Config::from_file(f.path()).is_err());
     }
 }
