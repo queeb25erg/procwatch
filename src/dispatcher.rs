@@ -1,59 +1,53 @@
-use crate::alert::{evaluate_alerts, Alert};
-use crate::config::Config;
-use crate::metrics::ProcessMetrics;
-use crate::webhook::WebhookSender;
-use std::collections::HashMap;
-use tracing::{error, info, warn};
+use crate::alert::{Alert, AlertLevel};
+use crate::throttle::AlertThrottle;
+use crate::webhook::WebhookClient;
 
 pub struct Dispatcher {
-    sender: WebhookSender,
-    config: Config,
-    /// Track consecutive alert counts per pid to avoid spam
-    alert_counts: HashMap<u32, u32>,
+    client: WebhookClient,
+    throttle: AlertThrottle,
 }
 
 impl Dispatcher {
-    pub fn new(config: Config) -> Self {
-        let sender = WebhookSender::new(config.webhook.url.clone());
+    pub fn new(webhook_url: &str, cooldown_secs: u64) -> Self {
         Self {
-            sender,
-            config,
-            alert_counts: HashMap::new(),
+            client: WebhookClient::new(webhook_url),
+            throttle: AlertThrottle::new(cooldown_secs),
         }
     }
 
-    pub async fn process(&mut self, metrics: &[ProcessMetrics]) {
-        let mut pending: Vec<Alert> = Vec::new();
+    /// Attempt to dispatch an alert, respecting the throttle.
+    /// Returns `Ok(true)` if the alert was sent, `Ok(false)` if throttled.
+    pub async fn dispatch(&mut self, alert: &Alert) -> Result<bool, String> {
+        let key = format!("{}:{:?}", alert.process_name, alert.level);
 
-        for m in metrics {
-            let alerts = evaluate_alerts(m, &self.config.alerts);
-            if alerts.is_empty() {
-                self.alert_counts.remove(&m.pid);
-                continue;
-            }
-            let count = self.alert_counts.entry(m.pid).or_insert(0);
-            *count += 1;
-            let repeat_interval = self.config.alerts.repeat_interval_cycles.unwrap_or(5);
-            if *count == 1 || *count % repeat_interval == 0 {
-                for a in &alerts {
-                    warn!(
-                        pid = a.pid,
-                        process = %a.process_name,
-                        value = a.value,
-                        threshold = a.threshold,
-                        "Alert triggered: {:?}",
-                        a.alert_type
-                    );
-                }
-                pending.extend(alerts);
-            }
+        if !self.throttle.should_fire(&key) {
+            log::debug!("Alert throttled for key: {}", key);
+            return Ok(false);
         }
 
-        if !pending.is_empty() {
-            info!(count = pending.len(), "Sending alerts via webhook");
-            if let Err(e) = self.sender.send(&pending).await {
-                error!("Failed to send webhook: {}", e);
-            }
-        }
+        self.client
+            .send(alert)
+            .await
+            .map_err(|e| format!("Webhook send failed: {}", e))?;
+
+        log::info!(
+            "Alert dispatched [{}] for process '{}': {}",
+            format!("{:?}", alert.level),
+            alert.process_name,
+            alert.message
+        );
+        Ok(true)
+    }
+
+    /// Call when a monitored process returns to a healthy state so the
+    /// next alert fires immediately without waiting for the cooldown.
+    pub fn clear_cooldown(&mut self, process_name: &str, level: &AlertLevel) {
+        let key = format!("{}:{:?}", process_name, level);
+        self.throttle.reset(&key);
+    }
+
+    /// Periodically prune stale throttle entries.
+    pub fn evict_stale(&mut self) {
+        self.throttle.evict_stale();
     }
 }
