@@ -57,6 +57,12 @@ fn system_uptime_seconds() -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Returns the start time of the process in clock ticks since boot,
+/// read from field 22 (index 21) of `/proc/<pid>/stat`.
+fn process_start_ticks(stat: &[String]) -> u64 {
+    stat.get(21).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
 pub fn collect(pid: u32) -> io::Result<ProcessMetrics> {
     let stat = read_proc_stat(pid)?;
     let name = stat
@@ -68,10 +74,13 @@ pub fn collect(pid: u32) -> io::Result<ProcessMetrics> {
     let stime: u64 = stat.get(14).and_then(|v| v.parse().ok()).unwrap_or(0);
     let total_ticks = utime + stime;
     let clk_tck = 100u64;
-    // Divide total CPU ticks by clock ticks per second and system uptime to get
-    // a percentage of CPU usage over the lifetime of the process.
+    // Compute CPU usage as a percentage of the process's elapsed lifetime.
+    // We derive elapsed seconds by subtracting the process start time (converted
+    // from ticks to seconds) from the total system uptime.
     let uptime = system_uptime_seconds();
-    let cpu_percent = (total_ticks as f64 / clk_tck as f64) / uptime * 100.0;
+    let start_secs = process_start_ticks(&stat) as f64 / clk_tck as f64;
+    let elapsed = (uptime - start_secs).max(1.0);
+    let cpu_percent = (total_ticks as f64 / clk_tck as f64) / elapsed * 100.0;
     let cpu_percent = cpu_percent.min(100.0);
 
     let memory_bytes = read_proc_status(pid)?;
