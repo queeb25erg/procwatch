@@ -44,6 +44,19 @@ fn total_memory_bytes() -> u64 {
         * 1024
 }
 
+/// Returns the uptime of the system in seconds by reading `/proc/uptime`.
+fn system_uptime_seconds() -> f64 {
+    fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|content| {
+            content
+                .split_whitespace()
+                .next()
+                .and_then(|v| v.parse::<f64>().ok())
+        })
+        .unwrap_or(1.0)
+}
+
 pub fn collect(pid: u32) -> io::Result<ProcessMetrics> {
     let stat = read_proc_stat(pid)?;
     let name = stat
@@ -55,7 +68,10 @@ pub fn collect(pid: u32) -> io::Result<ProcessMetrics> {
     let stime: u64 = stat.get(14).and_then(|v| v.parse().ok()).unwrap_or(0);
     let total_ticks = utime + stime;
     let clk_tck = 100u64;
-    let cpu_percent = (total_ticks as f64 / clk_tck as f64) * 100.0 / 60.0;
+    // Divide total CPU ticks by clock ticks per second and system uptime to get
+    // a percentage of CPU usage over the lifetime of the process.
+    let uptime = system_uptime_seconds();
+    let cpu_percent = (total_ticks as f64 / clk_tck as f64) / uptime * 100.0;
     let cpu_percent = cpu_percent.min(100.0);
 
     let memory_bytes = read_proc_status(pid)?;
