@@ -54,6 +54,32 @@ impl ProcessFilter {
             && self.min_cpu_percent.is_none()
             && self.min_mem_mb.is_none()
     }
+
+    /// Returns a human-readable summary of the active filter criteria.
+    /// Useful for logging or displaying the current filter configuration.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(ref s) = self.name_contains {
+            parts.push(format!("name contains '{}'", s));
+        }
+        if let Some(pid) = self.pid {
+            parts.push(format!("pid={}", pid));
+        }
+        if let Some(ref u) = self.user {
+            parts.push(format!("user='{}'", u));
+        }
+        if let Some(cpu) = self.min_cpu_percent {
+            parts.push(format!("cpu>={:.1}%", cpu));
+        }
+        if let Some(mem) = self.min_mem_mb {
+            parts.push(format!("mem>={:.1}MB", mem));
+        }
+        if parts.is_empty() {
+            "(no filters)".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
 }
 
 impl Default for ProcessFilter {
