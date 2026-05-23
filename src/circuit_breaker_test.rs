@@ -58,6 +58,21 @@ mod tests {
     }
 
     #[test]
+    fn test_half_open_success_closes_breaker() {
+        let mut cb = CircuitBreaker::new(1, 1, Duration::from_millis(1));
+        cb.record_failure();
+        assert!(cb.is_open());
+        std::thread::sleep(Duration::from_millis(5));
+        // Transition to HalfOpen by allowing a probe request
+        assert!(cb.allow_request());
+        assert_eq!(*cb.state(), CircuitState::HalfOpen);
+        // A single success should close the breaker (success_threshold = 1)
+        cb.record_success();
+        assert_eq!(*cb.state(), CircuitState::Closed);
+        assert!(!cb.is_open());
+    }
+
+    #[test]
     fn test_manager_tracks_multiple_keys() {
         let mut mgr = CircuitBreakerManager::new(2, 1, 60);
         mgr.record_failure("webhook_a");
