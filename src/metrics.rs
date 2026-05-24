@@ -63,6 +63,19 @@ fn process_start_ticks(stat: &[String]) -> u64 {
     stat.get(21).and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
+/// Returns the number of clock ticks per second on this system.
+/// Defaults to 100 if the value cannot be determined.
+fn clk_tck() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if ticks > 0 {
+            return ticks as u64;
+        }
+    }
+    100
+}
+
 pub fn collect(pid: u32) -> io::Result<ProcessMetrics> {
     let stat = read_proc_stat(pid)?;
     let name = stat
