@@ -49,6 +49,14 @@ mod tests {
     }
 
     #[test]
+    fn test_remaining_secs_decreases_after_expiry() {
+        let mut tracker = CooldownTracker::new(1);
+        tracker.record_alert("myapp");
+        thread::sleep(Duration::from_millis(1100));
+        assert_eq!(tracker.remaining_secs("myapp"), 0);
+    }
+
+    #[test]
     fn test_reset_clears_cooldown() {
         let mut tracker = CooldownTracker::new(60);
         tracker.record_alert("worker");
