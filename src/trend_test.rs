@@ -49,4 +49,17 @@ mod tests {
         assert_eq!(detect_trend(&h, 2.5), Trend::Stable);
         assert_eq!(detect_trend(&h, 1.5), Trend::Rising);
     }
+
+    #[test]
+    fn test_two_samples_rising() {
+        // Ensure the minimum viable case (two samples) is handled correctly
+        let h = make_history(&[1.0, 10.0]);
+        assert_eq!(detect_trend(&h, 1.0), Trend::Rising);
+    }
+
+    #[test]
+    fn test_two_samples_falling() {
+        let h = make_history(&[10.0, 1.0]);
+        assert_eq!(detect_trend(&h, 1.0), Trend::Falling);
+    }
 }
